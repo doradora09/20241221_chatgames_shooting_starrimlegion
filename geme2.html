@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>スターリム・レギオン デモ - スタート画面とBGM選択追加版</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+        }
+        canvas {
+            display: block;
+            background: #000;
+        }
+        #score, #bossHealthContainer, #highScore {
+            position: absolute;
+            left: 10px;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            font-size: 20px;
+            z-index: 1;
+        }
+        #score {
+            top: 10px;
+        }
+        #highScore {
+            top: 70px;
+        }
+        #bossHealthContainer {
+            top: 40px;
+            width: 200px;
+            height: 20px;
+            background: #555;
+            border: 2px solid #fff;
+            display: none; /* 初期状態では非表示 */
+        }
+        #bossHealthBar {
+            width: 100%;
+            height: 100%;
+            background: #f00;
+            transition: width 0.3s;
+        }
+        /* スタート画面のスタイル */
+        #startScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 2;
+            font-family: Arial, sans-serif;
+        }
+        #startScreen h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        .button {
+            padding: 10px 20px;
+            margin: 10px;
+            font-size: 20px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: #00aaff;
+            color: #fff;
+        }
+        .button:hover {
+            background-color: #0077cc;
+        }
+    </style>
+</head>
+<body>
+    <div id="startScreen">
+        <h1>スターリム・レギオン</h1>
+        <div>
+            <button class="button" id="startButton">ゲームスタート</button>
+        </div>
+        <div>
+            <label>
+                <input type="checkbox" id="bgmToggle" checked>
+                BGMを有効にする
+            </label>
+        </div>
+    </div>
+    
+    <div id="score">スコア: 0</div>
+    <div id="highScore">ハイスコア: 0</div>
+    <div id="bossHealthContainer">
+        <div id="bossHealthBar"></div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- オーディオタグの追加 -->
+    <audio id="normalBGM" src="game1.mp3" loop></audio>
+    <audio id="bossBGM" src="boss1.mp3" loop></audio>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // 画像オブジェクトの作成
+        const playerImage = new Image();
+        playerImage.src = 'player.png'; // プレイヤー画像のパス
+        const bossImage = new Image();
+        bossImage.src = 'boss.png'; // ボス画像のパス
+
+        // オーディオオブジェクトの取得
+        const normalBGM = document.getElementById('normalBGM');
+        const bossBGM = document.getElementById('bossBGM');
+
+        // ハイスコアの取得と表示
+        let highScore = localStorage.getItem('highScore') || 0;
+        const highScoreElement = document.getElementById('highScore');
+        highScoreElement.innerText = `ハイスコア: ${highScore}`;
+
+        // ゲームオブジェクト
+        const player = {
+            x: 100,
+            y: 0, // 初期値は後でリサイズ時に設定
+            width: 50,
+            height: 50,
+            speed: 5,
+            bullets: [],
+            lastShot: 0
+        };
+
+        const enemies = [];
+        const enemyBullets = [];
+        const enemyFrequency = 150; // フレームごとの敵出現頻度
+        let frame = 0;
+        let score = 0;
+        let isBossBattle = false; // ボス戦フラグ
+        let boss = null; // ボスオブジェクト
+        let bgmEnabled = true; // BGMの有効・無効フラグ
+
+        // ボスヘルス表示要素
+        const bossHealthContainer = document.getElementById('bossHealthContainer');
+        const bossHealthBar = document.getElementById('bossHealthBar');
+
+        // スタート画面の要素
+        const startScreen = document.getElementById('startScreen');
+        const startButton = document.getElementById('startButton');
+        const bgmToggle = document.getElementById('bgmToggle');
+
+        // キーボード入力
+        const keys = {};
+        window.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            keys[e.code] = false;
+        });
+
+        // キャンバスサイズをウィンドウに合わせる
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            player.y = canvas.height / 2 - player.height / 2;
+            if (boss) {
+                boss.y = canvas.height / 2 - boss.height / 2;
+            }
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // プレイヤーの描画（画像を使用）
+        function drawPlayer() {
+            if (playerImage.complete) { // 画像がロードされているか確認
+                ctx.drawImage(playerImage, player.x, player.y, player.width, player.height);
+            } else {
+                // 画像がロードされていない場合は代替の描画
+                ctx.fillStyle = '#00aaff';
+                ctx.fillRect(player.x, player.y, player.width, player.height);
+            }
+        }
+
+        // プレイヤーの弾の描画と更新（発光効果追加）
+        function drawBullets() {
+            player.bullets.forEach((bullet, index) => {
+                bullet.x += bullet.speed;
+                // 発光の描画
+                const gradient = ctx.createRadialGradient(
+                    bullet.x + bullet.width / 2, 
+                    bullet.y + bullet.height / 2, 
+                    0, 
+                    bullet.x + bullet.width / 2, 
+                    bullet.y + bullet.height / 2, 
+                    bullet.width
+                );
+                gradient.addColorStop(0, 'rgba(255, 255, 0, 1)');
+                gradient.addColorStop(1, 'rgba(255, 255, 0, 0)');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+
+                // 画面外に出たら削除
+                if (bullet.x > canvas.width) {
+                    player.bullets.splice(index, 1);
+                }
+            });
+        }
+
+        // 敵機の生成
+        function spawnEnemies() {
+            if (frame % enemyFrequency === 0 && !isBossBattle) {
+                const enemyHeight = 40;
+                const enemyY = Math.random() * (canvas.height - enemyHeight);
+                const isBoss = Math.random() < 0.05; // 5%の確率でボス出現
+                const newEnemy = {
+                    x: canvas.width,
+                    y: isBoss ? canvas.height / 2 - 40 : enemyY, // ボスは中央に出現
+                    width: isBoss ? 80 : 40,
+                    height: isBoss ? 80 : 40,
+                    speed: isBoss ? 1.5 : 3,
+                    type: isBoss ? 'boss' : 'normal',
+                    bullets: [],
+                    lastShot: 0,
+                    health: isBoss ? 100 : undefined, // ボスの場合のみヘルスを設定
+                    directionY: 1 // ボスの初期移動方向
+                };
+                enemies.push(newEnemy);
+                if (isBoss) {
+                    isBossBattle = true;
+                    // ボスヘルス表示
+                    bossHealthContainer.style.display = 'block';
+                    bossHealthBar.style.width = '100%';
+                    boss = newEnemy;
+
+                    // BGMの切り替え
+                    if (bgmEnabled) {
+                        normalBGM.pause();
+                        bossBGM.currentTime = 0;
+                        bossBGM.play();
+                    }
+                }
+            }
+        }
+
+        // ボスのヘルスを更新
+        function updateBossHealth() {
+            if (boss) {
+                const healthPercent = Math.max((boss.health / 100) * 100, 0);
+                bossHealthBar.style.width = `${healthPercent}%`;
+                if (healthPercent <= 0) {
+                    bossHealthContainer.style.display = 'none';
+                }
+            }
+        }
+
+        // ボスのランダムな飛行パターン
+        function moveBoss() {
+            if (boss) {
+                const speed = 2;
+                boss.y += speed * boss.directionY;
+                // ランダムに方向を変える
+                if (Math.random() < 0.02) { // 2%の確率で方向転換
+                    boss.directionY *= -1;
+                }
+                // 画面端に達したら方向転換
+                if (boss.y < 50 || boss.y > canvas.height - boss.height - 50) {
+                    boss.directionY *= -1;
+                }
+            }
+        }
+
+        // 敵機の描画と更新（通常の敵機は描画方法を維持、ボスは画像を使用）
+        function drawEnemies() {
+            enemies.forEach((enemy, index) => {
+                enemy.x -= enemy.speed;
+
+                if (enemy.type === 'normal') {
+                    // 通常の敵機の描画（既存の描画方法を維持）
+                    ctx.save();
+                    ctx.translate(enemy.x, enemy.y);
+
+                    // 本体
+                    ctx.fillStyle = '#ff3333';
+                    ctx.beginPath();
+                    ctx.moveTo(0, enemy.height / 2);
+                    ctx.lineTo(10, 0);
+                    ctx.lineTo(20, enemy.height / 2);
+                    ctx.lineTo(10, enemy.height);
+                    ctx.closePath();
+                    ctx.fill();
+
+                    // 翼
+                    ctx.fillStyle = '#cc0000';
+                    ctx.beginPath();
+                    ctx.moveTo(10, 10);
+                    ctx.lineTo(-20, enemy.height / 2);
+                    ctx.lineTo(10, enemy.height - 10);
+                    ctx.closePath();
+                    ctx.fill();
+
+                    // エンジン
+                    ctx.fillStyle = '#ffcc00';
+                    ctx.beginPath();
+                    ctx.arc(0, enemy.height / 2, 5, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 武装
+                    ctx.fillStyle = '#000000';
+                    ctx.fillRect(5, enemy.height / 2 - 5, 10, 10);
+
+                    ctx.restore();
+                } else if (enemy.type === 'boss') {
+                    // ボス機の描画（画像を使用）
+                    if (bossImage.complete) { // 画像がロードされているか確認
+                        ctx.drawImage(bossImage, enemy.x, enemy.y, enemy.width, enemy.height);
+                    } else {
+                        // 画像がロードされていない場合は代替の描画
+                        ctx.fillStyle = '#800080';
+                        ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+                    }
+
+                    // ボスの移動
+                    moveBoss();
+                }
+
+                // 画面外に出たら削除
+                if (enemy.x + enemy.width < 0) {
+                    enemies.splice(index, 1);
+                    if (enemy.type === 'boss') {
+                        isBossBattle = false;
+                        // ボスヘルス表示を非表示
+                        bossHealthContainer.style.display = 'none';
+                        boss = null;
+
+                        // BGMの切り替え
+                        if (bgmEnabled) {
+                            bossBGM.pause();
+                            normalBGM.currentTime = 0;
+                            normalBGM.play();
+                        }
+                    }
+                }
+            });
+        }
+
+        // ボスの弾幕生成関数
+        function generateBossBullets(boss) {
+            const bulletsPerWave = 36; // 360度分割
+            const angleIncrement = (Math.PI * 2) / bulletsPerWave;
+            const speed = 3;
+
+            for (let i = 0; i < bulletsPerWave; i++) {
+                const angle = i * angleIncrement;
+                enemyBullets.push({
+                    x: boss.x + boss.width / 2,
+                    y: boss.y + boss.height / 2,
+                    width: 6,
+                    height: 6,
+                    speedX: Math.cos(angle) * speed,
+                    speedY: Math.sin(angle) * speed,
+                    color: 'rgba(255, 0, 0, 1)'
+                });
+            }
+
+            // スパイラル弾幕を追加（例: 4秒ごと）
+            if (frame % 240 === 0) { // 4秒ごとにスパイラル弾幕発射（60fps想定）
+                generateSpiralBullets(boss);
+            }
+        }
+
+        // 追加の弾幕パターン例
+        function generateSpiralBullets(boss, rotations = 3, bulletsPerRotation = 36) {
+            const bulletsPerWave = rotations * bulletsPerRotation;
+            const angleIncrement = (Math.PI * 2) / bulletsPerRotation;
+            const speed = 2;
+
+            for (let i = 0; i < bulletsPerWave; i++) {
+                const angle = i * angleIncrement + (frame / 60) * Math.PI / 180; // 回転させる
+                enemyBullets.push({
+                    x: boss.x + boss.width / 2,
+                    y: boss.y + boss.height / 2,
+                    width: 6,
+                    height: 6,
+                    speedX: Math.cos(angle) * speed,
+                    speedY: Math.sin(angle) * speed,
+                    color: 'rgba(255, 0, 0, 1)'
+                });
+            }
+        }
+
+        // 敵の弾の描画と更新（シンプルな赤色の弾）
+        function drawEnemyBullets() {
+            enemyBullets.forEach((bullet, index) => {
+                bullet.x += bullet.speedX;
+                bullet.y += bullet.speedY;
+
+                // 発光の描画
+                const gradient = ctx.createRadialGradient(
+                    bullet.x + bullet.width / 2, 
+                    bullet.y + bullet.height / 2, 
+                    0, 
+                    bullet.x + bullet.width / 2, 
+                    bullet.y + bullet.height / 2, 
+                    bullet.width
+                );
+                // RGBA形式の色を使用
+                gradient.addColorStop(0, bullet.color); // 例: 'rgba(255, 0, 0, 1)'
+                gradient.addColorStop(1, bullet.color.replace('1)', '0)')); // 'rgba(255, 0, 0, 0)'
+
+                ctx.fillStyle = gradient;
+                ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+
+                // 画面外に出たら削除
+                if (
+                    bullet.x < -bullet.width || bullet.x > canvas.width ||
+                    bullet.y < -bullet.height || bullet.y > canvas.height
+                ) {
+                    enemyBullets.splice(index, 1);
+                }
+            });
+        }
+
+        // 敵の弾の生成（ボスの弾幕も含む）
+        function enemyShoot() {
+            enemies.forEach((enemy, index) => {
+                if (enemy.type === 'boss') {
+                    // ボスは弾幕を連続して発射
+                    if (frame % 120 === 0) { // 2秒ごとに弾幕発射（60fps想定）
+                        generateBossBullets(enemy);
+                    }
+                } else {
+                    // 通常の敵はランダムに弾を発射
+                    if (Math.random() < 0.005) { // 弾の発射確率
+                        enemyBullets.push({
+                            x: enemy.x,
+                            y: enemy.y + enemy.height / 2 - 5,
+                            width: 8,
+                            height: 16,
+                            speedX: -5, // 左向き
+                            speedY: 0,
+                            color: 'rgba(255, 0, 0, 1)' // RGBA形式に変更
+                        });
+                    }
+                }
+            });
+        }
+
+        // 衝突判定
+        function checkCollisions() {
+            // プレイヤーの弾と敵の衝突
+            player.bullets.forEach((bullet, bIndex) => {
+                enemies.forEach((enemy, eIndex) => {
+                    if (
+                        bullet.x < enemy.x + enemy.width &&
+                        bullet.x + bullet.width > enemy.x &&
+                        bullet.y < enemy.y + enemy.height &&
+                        bullet.y + bullet.height > enemy.y
+                    ) {
+                        if (enemy.type === 'boss') {
+                            // ボスに当たった場合
+                            enemy.health -= 10; // ダメージを与える
+                            updateBossHealth();
+                            player.bullets.splice(bIndex, 1); // 弾を削除
+
+                            if (enemy.health <= 0) {
+                                enemies.splice(eIndex, 1); // ボスを削除
+                                score += 1000;
+                                updateHighScore(score);
+                                document.getElementById('score').innerText = `スコア: ${score}`;
+
+                                // BGMの切り替え
+                                if (bgmEnabled) {
+                                    bossBGM.pause();
+                                    normalBGM.currentTime = 0;
+                                    normalBGM.play();
+                                }
+
+                                alert('ボスを倒しました！ スコア: ' + score);
+                                document.location.reload();
+                            }
+                        } else {
+                            // 通常の敵に当たった場合
+                            enemies.splice(eIndex, 1); // 敵を削除
+                            player.bullets.splice(bIndex, 1); // 弾を削除
+                            score += 100;
+                            updateHighScore(score);
+                            document.getElementById('score').innerText = `スコア: ${score}`;
+                        }
+                    }
+                });
+            });
+
+            // プレイヤーと敵の衝突
+            enemies.forEach((enemy) => {
+                if (
+                    player.x < enemy.x + enemy.width &&
+                    player.x + player.width > enemy.x &&
+                    player.y < enemy.y + enemy.height &&
+                    player.y + player.height > enemy.y
+                ) {
+                    // ゲームオーバー
+                    gameOver();
+                }
+            });
+
+            // 敵の弾とプレイヤーの衝突
+            enemyBullets.forEach((bullet, bIndex) => {
+                if (
+                    bullet.x < player.x + player.width &&
+                    bullet.x + bullet.width > player.x &&
+                    bullet.y < player.y + player.height &&
+                    bullet.y + bullet.height > player.y
+                ) {
+                    // ゲームオーバー
+                    gameOver();
+                }
+            });
+        }
+
+        // ゲームオーバー処理
+        function gameOver() {
+            alert(`ゲームオーバー！ スコア: ${score}`);
+            updateHighScore(score);
+            // BGMを停止
+            normalBGM.pause();
+            bossBGM.pause();
+            document.location.reload();
+        }
+
+        // ハイスコアの更新
+        function updateHighScore(currentScore) {
+            if (currentScore > highScore) {
+                highScore = currentScore;
+                localStorage.setItem('highScore', highScore);
+                highScoreElement.innerText = `ハイスコア: ${highScore}`;
+            }
+        }
+
+        // ボスの移動と弾幕発射をサポートする関数
+        function updateBoss() {
+            if (boss) {
+                moveBoss();
+            }
+        }
+
+        // ゲームループ
+        function gameLoop() {
+            // キャンバスをクリア（残像を防ぐ）
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // プレイヤーの移動
+            if (keys['ArrowUp'] && player.y > 0) {
+                player.y -= player.speed;
+            }
+            if (keys['ArrowDown'] && player.y + player.height < canvas.height) {
+                player.y += player.speed;
+            }
+
+            // 弾の発射
+            if (keys['Space']) {
+                if (frame - player.lastShot > 15) { // 発射間隔
+                    player.bullets.push({
+                        x: player.x + player.width,
+                        y: player.y + player.height / 2 - 5,
+                        width: 10,
+                        height: 10,
+                        speed: 7
+                    });
+                    player.lastShot = frame;
+                }
+            }
+
+            // 描画
+            drawPlayer();
+            drawBullets();
+            drawEnemies();
+            drawEnemyBullets();
+            checkCollisions();
+
+            // ボスの移動
+            updateBoss();
+
+            // 敵の生成と動作
+            spawnEnemies();
+            enemyShoot();
+
+            // スコア更新
+            document.getElementById('score').innerText = `スコア: ${score}`;
+
+            // フレームインクリメント
+            frame++;
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // スタートボタンのクリックイベント
+        startButton.addEventListener('click', () => {
+            startScreen.style.display = 'none';
+
+            // BGMの有無を確認
+            bgmEnabled = bgmToggle.checked;
+            if (bgmEnabled) {
+                normalBGM.volume = 0.5; // 音量を50%に設定
+                bossBGM.volume = 0.5;   // 音量を50%に設定
+                normalBGM.play().catch(error => {
+                    console.error('normalBGMの再生に失敗しました:', error);
+                });
+            }
+
+            // ゲーム開始
+            gameLoop();
+        });
+    </script>
+</body>
+</html>
